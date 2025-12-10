@@ -79,26 +79,3 @@ Use this for records added outside the main database search (e.g., "Registers"):
   * **Save Project:** Downloads a `.json` file containing all your inputs, stages, and structure.
   * **Load Project:** Upload a previously saved `.json` file to restore your session.
   * **Download PDF:** Generates a vector-based PDF, ideal for submission in manuscripts.
-
-## 🔧 Technical Implementation Details
-
-For developers modifying the code, here is how the graph layout logic works:
-
-### The "Spine" Strategy
-
-To prevent the chart from shifting left/right when exclusions are added, the code uses Graphviz `group` attributes:
-
-  * **Group `main`:** Assigned to the Title, all Main Flow Nodes, and the Final Node.
-  * **Group `side`:** Assigned to the blue Side Labels.
-  * **High Weight Edges:** Connections between `main` nodes have `weight=1000`. This forces the layout engine to draw a rigid vertical line (the spine), ensuring the Title is always centered relative to the final "Included" box.
-
-### Text Alignment Fix
-
-Standard Graphviz wrapping (`\n`) centers text. To force **Left Alignment** for exclusion lists:
-
-  * The app uses a custom `wrap_txt` function.
-  * It utilizes `str_wrap` for length calculation but replaces all newlines with `\l` (Graphviz code for "Left-aligned newline").
-
-### Data Safety
-
-  * `stringsAsFactors = FALSE` is strictly enforced in all data frames to prevent the "Details" text from converting to integer factors, which previously caused data loss during row deletion.
