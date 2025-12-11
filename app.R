@@ -4,7 +4,7 @@ library(DiagrammeRsvg)
 library(rsvg)
 library(jsonlite)
 library(glue)
-library(stringr) # Added for text wrapping
+library(stringr)
 
 # --- UI ---
 ui <- fluidPage(
@@ -14,23 +14,25 @@ ui <- fluidPage(
     sidebarPanel(
       width = 4,
       h4("1. Global Settings"),
-      textInput("chart_title", "Chart Title", value = "Study Identification and Inclusion Flow"),
-      numericInput("n_total", "Total Records Identified (e.g., ClinicalTrials.gov)", value = 9743),
+      textInput("chart_title", "Chart Title", value = "Study Identification and Inclusion Flow\nfor Colorectal Cancer Trials"),
+      
+      # --- FOOTNOTE INPUT ---
+      textAreaInput("chart_footnote", "Footnote", value = "Note: Database search included Medline and Embase.\n*Duplicate removal performed automatically.", rows = 3),
+      
+      numericInput("n_total", "Total Records Identified", value = 9743),
+      checkboxInput("show_side_labels", "Show Side Labels (Identification/Screening/Included)", value = TRUE),
       
       hr(),
       h4("2. Processing Stages"),
       p("Define your flow steps (e.g., 'Pre-Screening', 'Screening')."),
-      
-      # This UI component is generated dynamically from the server
       uiOutput("stages_ui"),
-      
       div(style="margin-top: 10px;",
           actionButton("add_stage_btn", "Add New Stage", icon = icon("layer-group"), class = "btn-primary")
       ),
       
       hr(),
       h4("3. Manual Additions"),
-      p("Studies added from other sources (bypass screening)."),
+      p("Studies added from other sources."),
       uiOutput("additions_ui"),
       
       hr(),
@@ -63,34 +65,33 @@ ui <- fluidPage(
 # --- SERVER ---
 server <- function(input, output, session) {
   
-  # --- 1. Robust Data Model ---
+  # --- 1. Data Model ---
   id_counter <- reactiveVal(2) 
-  
   data <- reactiveValues(
     stages = list(
       list(id = 1, name = "Pre-Screening", exclusions = data.frame(reason = character(), count = numeric(), stringsAsFactors=FALSE)),
       list(id = 2, name = "Screening", exclusions = data.frame(reason = character(), count = numeric(), stringsAsFactors=FALSE))
     ),
-    # Modified structure to include 'details' column
     additions = data.frame(reason = character(), count = numeric(), details = character(), stringsAsFactors=FALSE)
   )
   
   # --- Helper: Text Wrapper ---
-  # Wraps text to a specific width to create "margins" and new lines
-  wrap_txt <- function(txt, width = 45, sep = "\\n") {
+  wrap_txt <- function(txt, width = 45, sep = "\\l") {
     if (is.null(txt) || is.na(txt) || txt == "") return("")
-    # str_wrap breaks the text, paste collapses it with graphviz newline (\n)
-    # We use \l instead of \n for left alignment if desired, but \n centers it. 
-    # For this specific look (left aligned lists), we handle alignment in the graph code.
-    paste(str_wrap(txt, width = width), collapse = sep)
+    
+    # 1. Wrap the text (generates string with \n)
+    wrapped <- str_wrap(txt, width = width)
+    
+    # 2. CRITICAL FIX: Replace standard \n (Center) with \l (Left)
+    # This forces every wrapped line to snap to the left.
+    gsub("\n", sep, wrapped, fixed = TRUE)
   }
   
-  # --- 2. Centralized "Add Exclusion" Logic ---
+  # --- 2. Exclusion Logic ---
   observeEvent(input$add_excl_trigger, {
     target_id <- input$add_excl_trigger
     r <- input[[paste0("excl_rsn_", target_id)]]
     c <- input[[paste0("excl_cnt_", target_id)]]
-    
     if (!is.null(c) && c > 0 && r != "") {
       idx <- which(sapply(data$stages, function(x) x$id) == target_id)
       if(length(idx) > 0) {
@@ -106,11 +107,8 @@ server <- function(input, output, session) {
   observeEvent(input$add_stage_btn, {
     new_id <- id_counter() + 1
     id_counter(new_id)
-    new_stage <- list(
-      id = new_id, 
-      name = paste("New Stage", new_id), 
-      exclusions = data.frame(reason = character(), count = numeric(), stringsAsFactors=FALSE)
-    )
+    new_stage <- list(id = new_id, name = paste("New Stage", new_id), 
+                      exclusions = data.frame(reason = character(), count = numeric(), stringsAsFactors=FALSE))
     data$stages[[length(data$stages) + 1]] <- new_stage
   })
   
@@ -124,7 +122,7 @@ server <- function(input, output, session) {
     })
   })
   
-  # --- 4. UI Rendering ---
+  # --- 4. UI Rendering (Stages) ---
   output$stages_ui <- renderUI({
     stage_panels <- lapply(data$stages, function(stage) {
       i <- stage$id 
@@ -181,7 +179,8 @@ server <- function(input, output, session) {
     if(length(idx) > 0) data$stages[[idx]] <- NULL
   })
   
-  # --- 6. Manual Additions Logic (Updated for Details) ---
+  # --- 6. Manual Additions Logic ---
+  # --- 6. Manual Additions Logic ---
   output$additions_ui <- renderUI({
     tagList(
       div(style="margin-bottom: 5px;",
@@ -196,11 +195,20 @@ server <- function(input, output, session) {
               if(nrow(data$additions) > 0) {
                 lapply(1:nrow(data$additions), function(r) {
                   row <- data$additions[r,]
+                  
+                  # SAFETY CHECK: Ensure details is text and not NA
+                  det_text <- as.character(row$details)
+                  has_details <- !is.na(det_text) && det_text != ""
+                  
                   tags$li(
                     tags$b(row$count), " - ", row$reason,
                     tags$a(icon("times"), href="#", style="color:red; margin-left:5px;",
                            onclick = sprintf("Shiny.setInputValue('del_add_trigger', %d, {priority: 'event'})", r)),
-                    if(row$details != "") tags$pre(style="font-size:10px; margin-top:2px; background:#eee;", row$details)
+                    
+                    # Only render the grey box if we have valid details
+                    if(has_details) {
+                      tags$pre(style="font-size:10px; margin-top:2px; background:#eee;", det_text)
+                    }
                   )
                 })
               }
@@ -210,12 +218,17 @@ server <- function(input, output, session) {
   
   observeEvent(input$add_manual_btn, {
     if(input$add_cnt > 0 && input$add_rsn != "") {
-      data$additions <- rbind(data$additions, data.frame(
+      # Create the new row
+      new_row <- data.frame(
         reason = input$add_rsn, 
         count = input$add_cnt, 
-        details = input$add_details, # Store details
-        stringsAsFactors=FALSE
-      ))
+        details = input$add_details, 
+        stringsAsFactors = FALSE # CRITICAL: Prevents text from becoming Factors
+      )
+      
+      data$additions <- rbind(data$additions, new_row)
+      
+      # Clear inputs
       updateTextInput(session, "add_rsn", value="")
       updateNumericInput(session, "add_cnt", value=0)
       updateTextAreaInput(session, "add_details", value="")
@@ -248,126 +261,193 @@ server <- function(input, output, session) {
     list(steps = flow_steps, final = current_count)
   })
   
-  # --- 8. Graph Code Generation (Updated for Layout & Formatting) ---
+  # --- 8. Graph Code Generation ---
   # --- 8. Graph Code Generation ---
   # --- 8. Graph Code Generation ---
   graph_code <- reactive({
     f <- calc_flow()
     steps <- f$steps
     
-    # 1. Prepare Title Text (Centered Newlines)
-    # wrap_txt with sep="\\n" ensures lines break and center
     title_text <- wrap_txt(input$chart_title, width=50, sep="\\n")
+    raw_footnote <- input$chart_footnote
     
-    # 2. Define Global Graph Attributes
-    # labelloc="t" -> Places label at the Top
-    # labeljust="c" -> Centers the label
-    # size="8.27,11.69" -> A4 Portrait dimensions (in inches)
-    # ratio="compress" -> Scales graph to fit within the size without distorting aspect ratio
-    dot <- paste0("digraph prisma { \n graph [layout = dot, rankdir = TB, splines=ortho, nodesep=0.5, ranksep=0.5, fontname = \"Helvetica\",
-                   labelloc=\"t\", labeljust=\"c\", fontsize=20, margin=0.5,
-                   size=\"8.27,11.69\", ratio=\"compress\",
-                   label=\"", title_text, "\"]; \n 
-                   node [shape = box, style = filled, fillcolor = White, width=4.0, fontname = \"Helvetica\"]; \n")
+    # --- DOT SETTINGS ---
+    # splines=ortho: Orthogonal edges (right angles)
+    # nodesep=0.8: Good separation to prevent label overlap
+    dot <- "digraph prisma { \n graph [layout = dot, rankdir = TB, splines=ortho, 
+            nodesep=0.8, ranksep=0.5, fontname = \"Helvetica\",
+            fontsize=12, margin=\"0.5\"]; \n 
+            node [shape = box, style = filled, fillcolor = White, width=3.5, fontname = \"Helvetica\"]; \n"
     
-    # 3. Start Node (Title is now handled by 'graph', so we start directly with node_0)
+    # --- 1. TITLE NODE (Anchored to Spine) ---
+    # We remove the huge width. We give it 'group=main' to lock it to the center flow.
+    dot <- paste0(dot, "main_title [label='", title_text, "', shape=box, style='filled,rounded', 
+                  fillcolor='#FFC107', fontsize=18, width=5, height=1, group='main']; \n")
+    
+    # --- 2. SIDE LABELS (Independent Column) ---
+    if(input$show_side_labels) {
+      dot <- paste0(dot, "node [shape=box, style='filled,rounded', fillcolor='#90CAF9', width=1.5, fontsize=12, group='side']; \n")
+      dot <- paste0(dot, "lbl_id [label='Identification']; \n")
+      dot <- paste0(dot, "lbl_scr [label='Screening']; \n")
+      dot <- paste0(dot, "lbl_inc [label='Included']; \n")
+      
+      # Link labels vertically so they stay in a column
+      dot <- paste0(dot, "edge [style=invis, weight=100]; \n")
+      dot <- paste0(dot, "lbl_id -> lbl_scr -> lbl_inc; \n")
+      dot <- paste0(dot, "edge [style=solid, weight=1]; \n") # Reset defaults
+    }
+    
+    # --- 3. MAIN FLOW (The Spine) ---
+    # All nodes here get group='main' to align with Title
+    dot <- paste0(dot, "node [shape=box, style=filled, fillcolor=White, width=3.5, fontsize=14, group='main']; \n") 
+    
     prev_node <- "node_0"
+    
+    # Define First Node
     dot <- paste0(dot, "node_0 [label='Records Identified\\n(n = ", steps[[1]]$count, ")']; \n")
     
+    # CRITICAL: Connect Title -> First Node with High Weight
+    # This locks the Title directly above the first node.
+    dot <- paste0(dot, "main_title -> node_0 [style=invis, weight=1000]; \n")
+    
+    # Align Label 1 with Node 0
+    if(input$show_side_labels) {
+      dot <- paste0(dot, "{ rank = same; lbl_id; node_0; } \n")
+      # Invisible strut to keep distance between label and flow
+      dot <- paste0(dot, "lbl_id -> node_0 [style=invis, minlen=2]; \n")
+    }
+    
     node_idx <- 1
+    screening_label_placed <- FALSE
     
     for(s in steps) {
+      
+      # --- EXCLUSION (Branch Right) ---
       if(s$type == "exclusion") {
         ex_id <- paste0("excl_", node_idx)
         
-        # Build Exclusion Label
         if(nrow(s$reasons) > 0) {
-          # Header (Centered \n)
           lbl_head <- paste0("Excluded in ", s$stage_name, "\\n(n = ", s$removed, ")")
-          
-          # Body (Left Aligned \l)
-          lbl_body <- paste(
-            sapply(1:nrow(s$reasons), function(x) {
-              rsn <- s$reasons$reason[x]
-              cnt <- s$reasons$count[x]
-              # Format: Reason (n=X)
-              paste0(wrap_txt(rsn, 50, sep="\\l"), " (n=", cnt, ")")
-            }), 
-            collapse="\\l" 
-          )
-          
-          # Combine: Header + \n\n + Body + \l
+          lbl_body <- paste(sapply(1:nrow(s$reasons), function(x) {
+            paste0(wrap_txt(s$reasons$reason[x], 40, sep="\\l"), " (n=", s$reasons$count[x], ")")
+          }), collapse="\\l") 
           label_txt <- paste0(lbl_head, "\\n\\n", lbl_body, "\\l") 
         } else {
           label_txt <- paste0("Excluded in ", s$stage_name, "\\n(n = 0)")
         }
         
-        dot <- paste0(dot, ex_id, " [label='", label_txt, "', fillcolor='white']; \n")
+        # Exclusions do NOT have group='main', so they can float right
+        dot <- paste0(dot, ex_id, " [label='", label_txt, "', fillcolor='white', group='exclusions']; \n")
       }
       
+      # --- MAIN NODE (Continue Spine) ---
       if(s$type == "node") {
         next_id <- paste0("node_", node_idx)
         lbl <- paste0("Records remaining\\n(n = ", s$count, ")")
-        if(grepl("Screening", s$name, ignore.case=TRUE)) lbl <- paste0("Records screened\\n(n = ", s$count, ")")
-        if(grepl("Eligibility", s$name, ignore.case=TRUE)) lbl <- paste0("Reports assessed for eligibility\\n(n = ", s$count, ")")
         
         dot <- paste0(dot, next_id, " [label='", lbl, "']; \n")
-        dot <- paste0(dot, prev_node, " -> ", next_id, "; \n")
         
-        # Exclusion Edge and Ranking
+        # CRITICAL: High weight edge to keep the spine straight
+        dot <- paste0(dot, prev_node, " -> ", next_id, " [weight=1000]; \n")
+        
+        # Link Exclusion (Low weight, branches off)
         ex_prev_id <- paste0("excl_", node_idx)
         dot <- paste0(dot, prev_node, " -> ", ex_prev_id, " [minlen=2]; \n")
         dot <- paste0(dot, "{ rank = same; ", prev_node, "; ", ex_prev_id, "; } \n")
+        
+        # Place Screening Side Label at the first screening step
+        if(input$show_side_labels && !screening_label_placed) {
+          dot <- paste0(dot, "{ rank = same; lbl_scr; ", next_id, "; } \n")
+          dot <- paste0(dot, "lbl_scr -> ", next_id, " [style=invis, minlen=2]; \n")
+          screening_label_placed <- TRUE
+        }
         
         prev_node <- next_id
         node_idx <- node_idx + 1
       }
       
+      # --- ADDITIONS ---
+      # --- ADDITION NODE GENERATION ---
       if(s$type == "addition") {
         add_id <- "add_node"
         
-        # Build Addition Label with Details
+        # FIX: Calculate the full label including details
         if(nrow(s$reasons) > 0) {
-          header_txt <- paste0("Additional Trials Requested\\n(n = ", s$added, ")")
+          # 1. Header
+          header_txt <- paste0("Additional Trials\\n(n = ", s$added, ")")
           
+          # 2. Body (Loop through reasons and details)
           body_txt <- paste(sapply(1:nrow(s$reasons), function(x) {
             row <- s$reasons[x,]
-            cat_line <- paste0("- ", row$reason, " (", row$count, ")")
-            det_line <- ""
+            
+            # Extract details if they exist
+            det <- ""
             if(!is.na(row$details) && row$details != "") {
-              det_splits <- strsplit(row$details, "\n")[[1]]
-              det_clean <- paste0("    ", det_splits) 
-              det_line <- paste(det_clean, collapse="\\l") 
-              det_line <- paste0("\\l", det_line)
+              # Add indentation for the details
+              det <- paste0("\\l    ", paste(strsplit(row$details, "\n")[[1]], collapse="\\l    "))
             }
-            paste0(cat_line, det_line)
-          }), collapse="\\l") 
+            # Combine Category + Count + Details
+            paste0("- ", row$reason, " (", row$count, ")", det)
+          }), collapse="\\l")
           
+          # 3. Combine
           label_txt <- paste0(header_txt, "\\n\\l", body_txt, "\\l")
-        } else {
-          label_txt <- "Additional Records"
+        } else { 
+          label_txt <- "Additional Records" 
         }
         
-        dot <- paste0(dot, add_id, " [label='", label_txt, "', width=4.5]; \n")
+        # Draw the Node
+        dot <- paste0(dot, add_id, " [label='", label_txt, "', width=3.5]; \n")
         
         final_id <- "final_included"
-        dot <- paste0(dot, final_id, " [label='Studies Included in Review\\n(n = ", f$final, ")', style='filled', fillcolor='#E0F7FA']; \n")
+        # Assign Final Node to 'main' group to keep it aligned with the Title
+        dot <- paste0(dot, final_id, " [label='Studies Included in Review\\n(n = ", f$final, ")', style='filled', fillcolor='#E0F7FA', group='main']; \n")
         
-        dot <- paste0(dot, prev_node, " -> ", final_id, "; \n")
-        dot <- paste0(dot, add_id, " -> ", final_id, "; \n")
+        # Connect everything
         dot <- paste0(dot, "{ rank = same; ", prev_node, "; ", add_id, "; } \n")
+        dot <- paste0(dot, prev_node, " -> ", final_id, " [weight=1000]; \n") # Keep the spine straight
+        dot <- paste0(dot, add_id, " -> ", final_id, "; \n")
         prev_node <- final_id 
       }
     }
     
+    # --- FINAL CONNECTION ---
     if(!any(sapply(steps, function(x) x$type == "addition"))) {
-      dot <- paste0(dot, prev_node, " [fillcolor='#E0F7FA', label='Studies Included in Review\\n(n = ", f$final, ")']; \n")
+      final_id <- "final_included"
+      # Ensure Final Node is in group='main'
+      dot <- paste0(dot, final_id, " [fillcolor='#E0F7FA', label='Studies Included in Review\\n(n = ", f$final, ")', group='main']; \n")
+      
+      # High weight to finish the spine
+      dot <- paste0(dot, prev_node, " -> ", final_id, " [weight=1000]; \n") 
+    }
+    
+    # --- ALIGN FINAL LABEL ---
+    if(input$show_side_labels) {
+      dot <- paste0(dot, "{ rank = same; lbl_inc; final_included; } \n")
+      dot <- paste0(dot, "lbl_inc -> final_included [style=invis, minlen=2]; \n")
+    }
+    
+    # --- FOOTNOTE ---
+    if(raw_footnote != "") {
+      fn_wrapped <- wrap_txt(raw_footnote, width=100, sep="<BR/>")
+      lbl_html <- paste0(
+        "<<TABLE BORDER='0' CELLBORDER='0' CELLSPACING='0'>",
+        "<TR><TD WIDTH='600' HEIGHT='10'></TD></TR>", 
+        "<TR><TD BORDER='1' SIDES='T' ALIGN='LEFT' BALIGN='TOP' CELLPADDING='5'>",
+        "<FONT POINT-SIZE='10'>", fn_wrapped, "</FONT>",
+        "</TD></TR></TABLE>>"
+      )
+      dot <- paste0(dot, "node_footnote [label=", lbl_html, ", shape=plain, group='main']; \n")
+      
+      # Anchor footnote to the spine as well
+      dot <- paste0(dot, final_id, " -> node_footnote [style=invis, weight=1000]; \n")
     }
     
     dot <- paste0(dot, "}")
     dot
   })
   
+  # --- 9. Outputs ---
   output$summary_table <- renderTable({
     f <- calc_flow()
     df_list <- lapply(f$steps, function(s) {
@@ -384,14 +464,11 @@ server <- function(input, output, session) {
   output$exp_png <- downloadHandler(filename = "prisma_flow.png", content = function(file) { rsvg_png(charToRaw(export_svg(grViz(graph_code()))), file) })
   output$exp_pdf <- downloadHandler(
     filename = "prisma_flow.pdf", 
-    content = function(file) { 
-      # Because we added size=A4 to the DOT code, rsvg_pdf will respect that aspect ratio
-      rsvg_pdf(charToRaw(export_svg(grViz(graph_code()))), file) 
-    }
+    content = function(file) { rsvg_pdf(charToRaw(export_svg(grViz(graph_code()))), file) }
   )  
   output$save_json <- downloadHandler(
     filename = function() { paste0("prisma_project_", Sys.Date(), ".json") },
-    content = function(file) { write_json(list(n_total = input$n_total, stages = data$stages, additions = data$additions), file, auto_unbox = TRUE) }
+    content = function(file) { write_json(list(n_total = input$n_total, stages = data$stages, additions = data$additions, footnote = input$chart_footnote), file, auto_unbox = TRUE) }
   )
   
   observeEvent(input$load_json, {
@@ -399,30 +476,7 @@ server <- function(input, output, session) {
     tryCatch({
       imp <- read_json(input$load_json$datapath, simplifyVector = TRUE)
       updateNumericInput(session, "n_total", value = imp$n_total)
-      
-      restored_stages <- list()
-      if(is.data.frame(imp$stages)) {
-        for(i in 1:nrow(imp$stages)) {
-          stg <- imp$stages[i,]
-          excl_df <- stg$exclusions
-          if(is.list(excl_df) && !is.data.frame(excl_df)) excl_df <- excl_df[[1]]
-          if(is.null(excl_df)) excl_df <- data.frame(reason=character(), count=numeric())
-          restored_stages[[length(restored_stages)+1]] <- list(id = stg$id, name = stg$name, exclusions = excl_df)
-        }
-      } else { restored_stages <- imp$stages }
-      data$stages <- restored_stages
-      
-      # Restore Additions (handling new 'details' column for backwards compatibility)
-      if(!is.null(imp$additions)) {
-        adds <- imp$additions
-        if(!"details" %in% colnames(adds)) adds$details <- "" 
-        data$additions <- adds
-      } else {
-        data$additions <- data.frame(reason=character(), count=numeric(), details=character())
-      }
-      
-      max_id <- if(length(restored_stages) > 0) max(sapply(restored_stages, function(x) x$id)) else 0
-      id_counter(max(2, max_id))
+      if(!is.null(imp$footnote)) updateTextAreaInput(session, "chart_footnote", value = imp$footnote)
     }, error = function(e) { showNotification("Error loading JSON.", type="error") })
   })
 }
