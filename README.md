@@ -2,7 +2,7 @@
 
 
 
-# Advanced Dynamic PRISMA Flow Generator
+# Advanced Dynamic PRISMA Flow Generator， access with link:https://qiyuninr.shinyapps.io/PRISMA-Generator/
 
 A robust R Shiny application designed to generate publication-quality **PRISMA flow diagrams** for systematic reviews and meta-analyses.
 
