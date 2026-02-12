@@ -30,19 +30,14 @@ ui <- fluidPage(
       hr(),
       h4("3. Manual Additions (Inclusion)"),
       
-      # --- FIX 3: Static Input Form (Prevents input breaking on refresh) ---
-      div(style="display:flex; gap:5px;",
-          div(style="flex-grow:1;", textInput("add_rsn", "Category", placeholder="e.g., Other sources")),
-          # --- FIX 1: Align Count to Right ---
-          div(style="width:100px; text-align: right;", numericInput("add_cnt", "Count", 0, min=0))
-      ),
+      uiOutput("manual_input_row_ui"),
+      
       textAreaInput("add_anno", "Annotation / Details", placeholder="Enter details... (Preserves formatting)", rows = 2),
       
       div(style="display: flex; justify-content: flex-end; width: 100%; margin-bottom: 15px;",
           actionButton("add_manual_btn", "Add Entry", icon = icon("plus"), class="btn-info btn-sm")
       ),
       
-      # Dynamic List Output (Only the list refreshes now)
       uiOutput("additions_list_ui"),
       
       hr(),
@@ -81,7 +76,19 @@ server <- function(input, output, session) {
     additions = data.frame(uid = character(), reason = character(), count = numeric(), details = character(), stringsAsFactors=FALSE)
   )
   
-  # --- Logic: Add/Edit/Delete Exclusions ---
+  output$manual_input_row_ui <- renderUI({
+    HTML(paste0(
+      '<div style="display:flex; gap:10px; align-items:flex-end; margin-bottom: 5px;">',
+      '<div style="flex-grow:1;">',
+      as.character(textInput("add_rsn", "Category", placeholder="e.g., Other sources")),
+      '</div>',
+      '<div style="width:100px;">',
+      as.character(numericInput("add_cnt", "Count", 0, min=0)),
+      '</div>',
+      '</div>'
+    ))
+  })
+  
   observeEvent(input$add_excl_trigger, {
     req(input$add_excl_trigger)
     target_id <- as.numeric(input$add_excl_trigger$id)
@@ -116,7 +123,6 @@ server <- function(input, output, session) {
     if(length(idx) > 0) data$stages[[idx]]$exclusions <- data$stages[[idx]]$exclusions[-r_idx, , drop=FALSE]
   })
   
-  # --- UI Rendering for Stages ---
   output$stages_ui <- renderUI({
     lapply(data$stages, function(stage) {
       s_id <- stage$id
@@ -129,7 +135,6 @@ server <- function(input, output, session) {
                 ),
                 div(style="display:flex; gap:5px; align-items:flex-end;",
                     div(style="flex-grow:1;", textInput(paste0("excl_rsn_", s_id), "Reason", placeholder = "Exclude for...")),
-                    # --- FIX 2: Rename 'n' to 'Count' ---
                     div(style="width:70px;", numericInput(paste0("excl_cnt_", s_id), "Count", 0, min=0)),
                     tags$button(class = "btn btn-default", type = "button", icon("plus"),
                                 onclick = sprintf("Shiny.setInputValue('add_excl_trigger', {id: %d, nonce: Math.random()}, {priority: 'event'})", s_id))
@@ -149,7 +154,6 @@ server <- function(input, output, session) {
     })
   })
   
-  # --- Manual Additions UI List (Dynamic Only) ---
   output$additions_list_ui <- renderUI({
     tags$ul(style="padding-left:0; list-style:none;",
             if(nrow(data$additions) > 0) lapply(1:nrow(data$additions), function(r) {
@@ -197,7 +201,6 @@ server <- function(input, output, session) {
     }
   })
   
-  # --- Graph Logic ---
   calc_flow <- reactive({
     current_count <- if(is.na(input$n_total)) 0 else input$n_total
     steps <- list()
@@ -236,7 +239,7 @@ server <- function(input, output, session) {
     }
     
     dot <- "digraph prisma { 
-      graph [layout = dot, rankdir = TB, splines=ortho, nodesep=1.0, ranksep=0.8, fontname = 'Helvetica', fontsize=12, newrank=true];
+      graph [layout = dot, rankdir = TB, splines=polyline, nodesep=1.0, ranksep=0.8, fontname = 'Helvetica', fontsize=12, newrank=true];
       node [shape = box, style = filled, fillcolor = White, width=3.5, fontname = 'Helvetica']; \n"
     
     dot <- paste0(dot, "main_title [label='", title_text, "', shape=box, style='filled,rounded', fillcolor='#FFC107', fontsize=16, width=5]; \n")
@@ -246,7 +249,6 @@ server <- function(input, output, session) {
                    lbl_id [label='Identification']; 
                    lbl_scr [label='Screening']; 
                    lbl_inc [label='Included']; \n")
-      dot <- paste0(dot, "edge [style=invis]; lbl_id -> lbl_scr -> lbl_inc; \n edge [style=solid]; \n")
     }
     
     dot <- paste0(dot, "node [shape=box, style=filled, fillcolor=White, width=3.5, fontsize=12, group=main]; \n") 
@@ -254,11 +256,20 @@ server <- function(input, output, session) {
     dot <- paste0(dot, "node_0 [label='Records Identified\\n(n = ", steps[[1]]$count, ")']; \n")
     dot <- paste0(dot, "main_title -> node_0 [style=invis]; \n")
     
-    if(input$show_side_labels) { dot <- paste0(dot, "{ rank = same; lbl_id; node_0; } \n") }
+    if(input$show_side_labels) {
+      dot <- paste0(dot, "{ rank = same; lbl_id; node_0; } \n")
+      dot <- paste0(dot, "lbl_id -> node_0 [style=invis, weight=10]; \n") # Weight forces order
+    }
     
     node_idx <- 1
     for(s in steps) {
       if(s$type == "exclusion") {
+        # Align Screening Label with the row where the second stage starts
+        if(input$show_side_labels && node_idx == 2) {
+          dot <- paste0(dot, "{ rank = same; lbl_scr; ", prev_node, "; } \n")
+          dot <- paste0(dot, "lbl_scr -> ", prev_node, " [style=invis, weight=10]; \n")
+        }
+        
         ex_id <- paste0("excl_", node_idx)
         lbl_head <- paste0("<B>Excluded in ", s$stage_name, "</B><BR/>(n = ", s$removed, ")")
         
@@ -280,9 +291,6 @@ server <- function(input, output, session) {
         dot <- paste0(dot, "{ rank = same; ", prev_node, "; ", paste0("excl_", node_idx), "; } \n")
         dot <- paste0(dot, prev_node, " -> ", paste0("excl_", node_idx), " [minlen=2]; \n")
         
-        if(input$show_side_labels && node_idx == floor(length(data$stages)/2) + 1) {
-          dot <- paste0(dot, "{ rank = same; lbl_scr; ", next_id, "; } \n")
-        }
         prev_node <- next_id
         node_idx <- node_idx + 1
       }
@@ -295,7 +303,8 @@ server <- function(input, output, session) {
           cnt <- s$reasons$count[i]
           det <- format_text(s$reasons$details[i], width=35)
           
-          reason_line <- paste0("<TR><TD ALIGN='LEFT'><B>", rsn, "</B> (n=", cnt, ")<BR ALIGN='LEFT'/></TD></TR>")
+          # --- ADDED SPACE BETWEEN NAME AND COUNT ---
+          reason_line <- paste0("<TR><TD ALIGN='LEFT'><B>", rsn, "</B>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(n=", cnt, ")<BR ALIGN='LEFT'/></TD></TR>")
           detail_line <- if(nchar(det) > 0) paste0("<TR><TD ALIGN='LEFT' FONTSIZE='10' COLOR='#555555'>", det, "<BR ALIGN='LEFT'/></TD></TR>") else ""
           
           paste0(reason_line, detail_line)
@@ -306,7 +315,7 @@ server <- function(input, output, session) {
                           paste(rows_html, collapse=""),
                           "</TABLE>>")
         
-        dot <- paste0(dot, add_id, " [label=", add_lbl, ", fillcolor='#F9F9F9', group=right_side, width=3]; \n")
+        dot <- paste0(dot, add_id, " [label=", add_lbl, ", fillcolor='#F9F9F9', group=right_side, width=3.5]; \n")
         
         final_id <- "final_included"
         dot <- paste0(dot, final_id, " [label='Studies Included\\n(n = ", f$final, ")', style='filled', fillcolor='#E0F7FA', group=main]; \n")
@@ -325,7 +334,10 @@ server <- function(input, output, session) {
       dot <- paste0(dot, prev_node, " -> ", final_id, " [weight=1000]; \n") 
     }
     
-    if(input$show_side_labels) { dot <- paste0(dot, "{ rank = same; lbl_inc; final_included; } \n") }
+    if(input$show_side_labels) {
+      dot <- paste0(dot, "{ rank = same; lbl_inc; final_included; } \n")
+      dot <- paste0(dot, "lbl_inc -> final_included [style=invis, weight=10]; \n")
+    }
     
     if (!is.null(input$chart_footnote) && input$chart_footnote != "") {
       fn_text <- format_text(input$chart_footnote, width=50)
